@@ -159,7 +159,7 @@ def main():
     ap.add_argument("--ckpt-dir", default="./result/checkpoints")
     ap.add_argument("--models", default=",".join(MODELS), help="comma-separated subset")
     ap.add_argument("--train", action="store_true", help="(re)train instead of loading checkpoints")
-    ap.add_argument("--epochs", type=int, default=200)
+    ap.add_argument("--epochs", type=int, default=300, help="max epochs (early stopping may end sooner)")
     ap.add_argument("--sample", type=int, default=0, help="val index for the physics overlay")
     ap.add_argument("--out", default="./result/evaluation")
     args = ap.parse_args()
