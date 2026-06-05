@@ -25,7 +25,7 @@ import torch
 from dataset import PCData, compute_metrics
 from factory import MODELS, build_model
 from pc import STABLE_END, STABLE_START, _use_cjk_font, rigid_overhead_contact_system_params, run_simulation
-from train import save_checkpoint, train_model
+from train import load_best_hp, save_checkpoint, train_model
 
 PRESETS = [1, 2, 3, 4]
 
@@ -91,15 +91,26 @@ def get_model(name, data, device, ckpt_dir, do_train, epochs):
     path = Path(ckpt_dir) / f"{name}.pt"
     if path.exists() and not do_train:
         ckpt = torch.load(path, map_location=device, weights_only=False)
-        model = build_model(name, data.input_size, data.output_size, seq_to_seq=True)
+        # Rebuild with the checkpoint's (possibly tuned) architecture so weights match.
+        model = build_model(name, data.input_size, data.output_size, seq_to_seq=True,
+                            hp=ckpt["config"].get("arch_hp"))
         model.load_state_dict(ckpt["state_dict"])
         train_time = ckpt["config"].get("train_time_s", float("nan"))
         return model.to(device).eval(), train_time
+    # Apply tuned hyperparameters (tune.py) if present.
+    arch_hp, train_hp = load_best_hp(name)
+    if arch_hp is not None:
+        print(f"[{name}] using tuned hp: arch={arch_hp}  train={train_hp}")
     t0 = time.perf_counter()
-    model, history = train_model(name, data, device, epochs=epochs, verbose=True)
+    model, history = train_model(
+        name, data, device, epochs=epochs, hp=arch_hp,
+        lr=train_hp.get("lr", 1e-3), batch_size=train_hp.get("batch_size", 16),
+        weight_decay=train_hp.get("weight_decay", 0.0), verbose=True,
+    )
     train_time = time.perf_counter() - t0
     save_checkpoint(path, model, name, data,
-                    config={"epochs": epochs, "train_time_s": train_time, "history": history})
+                    config={"epochs": epochs, "arch_hp": arch_hp,
+                            "train_time_s": train_time, "history": history})
     return model.eval(), train_time
 
 
@@ -159,7 +170,7 @@ def main():
     ap.add_argument("--ckpt-dir", default="./result/checkpoints")
     ap.add_argument("--models", default=",".join(MODELS), help="comma-separated subset")
     ap.add_argument("--train", action="store_true", help="(re)train instead of loading checkpoints")
-    ap.add_argument("--epochs", type=int, default=300, help="max epochs (early stopping may end sooner)")
+    ap.add_argument("--epochs", type=int, default=500, help="max epochs (early stopping may end sooner)")
     ap.add_argument("--sample", type=int, default=0, help="val index for the physics overlay")
     ap.add_argument("--out", default="./result/evaluation")
     args = ap.parse_args()

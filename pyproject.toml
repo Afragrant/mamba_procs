@@ -8,6 +8,7 @@ dependencies = [
     "mamba-ssm>=2.3.2.post1",
     "matplotlib>=3.10.9",
     "numpy>=2.4.6",
+    "optuna>=4.9.0",
     "scipy>=1.17.1",
     "torch>=2.12.0",
     "torchvision>=0.27.0",
