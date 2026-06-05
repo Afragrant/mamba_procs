@@ -34,11 +34,11 @@ def train_model(
     name: str,
     data: PCData,
     device: str,
-    epochs: int = 500,
+    epochs: int = 1000,
     lr: float = 1e-3,
     batch_size: int = 16,
     seed: int = 0,
-    patience: int = 50,
+    patience: int = 100,
     weight_decay: float = 0.0,
     hp: dict | None = None,
     train_tensors: tuple | None = None,
@@ -61,7 +61,12 @@ def train_model(
     torch.manual_seed(seed)
     model = build_model(name, data.input_size, data.output_size, seq_to_seq=True, hp=hp).to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
-    sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=epochs)
+    # Drop LR when val plateaus (decoupled from the epoch ceiling); its patience is
+    # a fraction of the early-stop patience so LR can step down several times before
+    # training stops.
+    lr_patience = max(5, patience // 5)
+    sched = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        opt, mode="min", factor=0.5, patience=lr_patience, min_lr=1e-6)
     loss_fn = torch.nn.MSELoss()
 
     x_tr, y_tr = train_tensors if train_tensors is not None else (data.x_train, data.y_train)
@@ -86,12 +91,12 @@ def train_model(
             loss = loss_fn(model(xb), yb)
             loss.backward()
             opt.step()
-        sched.step()
 
         model.eval()
         with torch.no_grad():
             val_loss = loss_fn(model(x_val), y_val).item()
         history.append(val_loss)
+        sched.step(val_loss)  # ReduceLROnPlateau is driven by the val metric
         if val_loss < best_val:
             best_val = val_loss
             best_epoch = epoch
@@ -101,7 +106,8 @@ def train_model(
             epochs_no_improve += 1
 
         if verbose and (epoch % max(1, epochs // 10) == 0 or epoch == 1):
-            print(f"  epoch {epoch:4d}/{epochs}  val_mse={val_loss:.4e}  best={best_val:.4e} (@{best_epoch})")
+            cur_lr = opt.param_groups[0]["lr"]
+            print(f"  epoch {epoch:4d}/{epochs}  val_mse={val_loss:.4e}  best={best_val:.4e} (@{best_epoch})  lr={cur_lr:.2e}")
 
         if epoch_callback is not None:
             epoch_callback(epoch, val_loss)  # may raise (e.g. optuna.TrialPruned)
@@ -167,8 +173,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--model", required=True, help="tcn | lstm | mamba | tcn-mamba")
     ap.add_argument("--data", default="./result/pc_dataset.npz")
-    ap.add_argument("--epochs", type=int, default=500, help="max epochs (early stopping may end sooner)")
-    ap.add_argument("--patience", type=int, default=50, help="early-stop patience; 0 disables")
+    ap.add_argument("--epochs", type=int, default=1000, help="max epochs (early stopping may end sooner)")
+    ap.add_argument("--patience", type=int, default=100, help="early-stop patience; 0 disables")
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--batch-size", type=int, default=16)
     ap.add_argument("--weight-decay", type=float, default=0.0)
