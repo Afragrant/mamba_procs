@@ -7,7 +7,7 @@ built from causal, dilated 1D convolutions stacked in residual blocks.
 
 import torch
 import torch.nn as nn
-from torch.nn.utils import weight_norm
+from torch.nn.utils.parametrizations import weight_norm
 
 
 class Chomp1d(nn.Module):
@@ -37,30 +37,25 @@ class TemporalBlock(nn.Module):
         dropout: float = 0.2,
     ):
         super().__init__()
-        self.conv1 = weight_norm(
-            nn.Conv1d(
-                n_inputs,
-                n_outputs,
-                kernel_size,
-                stride=stride,
-                padding=padding,
-                dilation=dilation,
-            )
+        # Initialize the raw conv weights *before* wrapping with weight_norm: the
+        # parametrized API derives `weight` from a parametrization, so direct
+        # `.weight.data` assignment must happen on the plain conv first.
+        conv1 = nn.Conv1d(
+            n_inputs, n_outputs, kernel_size,
+            stride=stride, padding=padding, dilation=dilation,
         )
+        conv2 = nn.Conv1d(
+            n_outputs, n_outputs, kernel_size,
+            stride=stride, padding=padding, dilation=dilation,
+        )
+        conv1.weight.data.normal_(0, 0.01)
+        conv2.weight.data.normal_(0, 0.01)
+        self.conv1 = weight_norm(conv1)
         self.chomp1 = Chomp1d(padding)
         self.relu1 = nn.ReLU()
         self.dropout1 = nn.Dropout(dropout)
 
-        self.conv2 = weight_norm(
-            nn.Conv1d(
-                n_outputs,
-                n_outputs,
-                kernel_size,
-                stride=stride,
-                padding=padding,
-                dilation=dilation,
-            )
-        )
+        self.conv2 = weight_norm(conv2)
         self.chomp2 = Chomp1d(padding)
         self.relu2 = nn.ReLU()
         self.dropout2 = nn.Dropout(dropout)
@@ -80,11 +75,6 @@ class TemporalBlock(nn.Module):
             nn.Conv1d(n_inputs, n_outputs, 1) if n_inputs != n_outputs else None
         )
         self.relu = nn.ReLU()
-        self.init_weights()
-
-    def init_weights(self) -> None:
-        self.conv1.weight.data.normal_(0, 0.01)
-        self.conv2.weight.data.normal_(0, 0.01)
         if self.downsample is not None:
             self.downsample.weight.data.normal_(0, 0.01)
 
