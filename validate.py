@@ -19,7 +19,9 @@ from pc import _use_cjk_font
 def load_model(ckpt_path: str, device: str):
     """Rebuild a model from a checkpoint saved by train.py."""
     ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
-    model = build_model(ckpt["model_name"], ckpt["input_size"], ckpt["output_size"], seq_to_seq=True)
+    # Rebuild with the checkpoint's (possibly tuned) architecture so weights match.
+    model = build_model(ckpt["model_name"], ckpt["input_size"], ckpt["output_size"],
+                        seq_to_seq=True, hp=ckpt["config"].get("arch_hp"))
     model.load_state_dict(ckpt["state_dict"])
     return model.to(device).eval(), ckpt
 
