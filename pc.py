@@ -58,8 +58,8 @@ def rigid_overhead_contact_system_params(rigid_overhead_contact_system: int, N_s
         # L,    N,  rhoA, EI,       KEQ,  MEQ, MZ,   L_MZ
         1: (8.0, 30, 8.1, 1.7e5, 6.7e7, 7.0, 2.84, 12.0),
         2: (8.5, 30, 7.1, 2.7e5, 6e5, 7.0, 2.84, 12.0),
-        3: (8, 30, 7.25, 2.69e5, 6e4, 7.0, 2.84, 12.0),
-        4: (8.0, 30, 7.35, 2.16e5, 3.7788e7, 2.7692, 2.84, 12.0),
+        3: (8.0, 30, 7.25, 2.69e5, 6e4, 7.0, 2.84, 12.0),
+        4: (8.0, 30, 7.35, 2.16e5, 3.7788e7, 7.0, 2.84, 12.0),
     }
     if rigid_overhead_contact_system not in table:
         raise ValueError(
@@ -156,7 +156,9 @@ def run_simulation(
         N = N_spans
         MZ, L_MZ = 2.84, 12.0
     else:
-        L, N, rhoA, EI, KEQ, MEQ, MZ, L_MZ = rigid_overhead_contact_system_params(rigid_overhead_contact_system, N_spans)
+        L, N, rhoA, EI, KEQ, MEQ, MZ, L_MZ = rigid_overhead_contact_system_params(
+            rigid_overhead_contact_system, N_spans
+        )
     m1, m2, m3, k1, k2, k3, c1, c2, c3, F0 = pantograph_params(pantograph, speed_kmh)
 
     v = speed_kmh / 3.6  # [m/s]
