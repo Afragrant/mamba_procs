@@ -13,3 +13,5 @@ result/*
 data/
 
 发表分析*
+*.pdf
+*.log
