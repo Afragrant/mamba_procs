@@ -36,6 +36,23 @@ def set_seed(seed: int):
     torch.cuda.manual_seed_all(seed)
 
 
+class WeightedMSELoss(nn.Module):
+    """逐输出通道加权 MSE. weights 形状 (C,), 对应 (Fc, y_panto, y_cat).
+
+    输出已归一化到 [-1,1], 各通道尺度可比, 故权重直接反映"重视程度":
+    接触力 Fc 最难且最关键, 权重最大.
+    """
+
+    def __init__(self, weights):
+        super().__init__()
+        w = torch.as_tensor(weights, dtype=torch.float32)
+        self.register_buffer('w', w / w.mean())  # 归一化, 不改变整体损失量级
+
+    def forward(self, pred, target):           # (B, T, C)
+        se = (pred - target) ** 2
+        return (se * self.w).mean()
+
+
 @torch.no_grad()
 def evaluate_loss(model, loader, loss_fn, device):
     model.eval()
@@ -58,7 +75,8 @@ def train(model_name, data_path, epochs, batch_size, lr, device, out_ckpt):
     opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=C.WEIGHT_DECAY)
     sched = torch.optim.lr_scheduler.ReduceLROnPlateau(
         opt, mode='min', factor=C.LR_FACTOR, patience=C.LR_PATIENCE, min_lr=C.LR_MIN)
-    loss_fn = nn.MSELoss()
+    loss_fn = WeightedMSELoss(C.CHANNEL_LOSS_WEIGHTS).to(device)
+    print(f'通道损失权重 (Fc, y_panto, y_cat) = {C.CHANNEL_LOSS_WEIGHTS}')
 
     best_val, best_state, patience = float('inf'), None, 0
     history = {'train': [], 'val': []}

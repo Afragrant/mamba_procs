@@ -44,6 +44,14 @@ INPUT_RANGES = {
 # 注: 仅影响采样分布; 归一化仍按题述线性 Min-Max 公式 (二者独立).
 LOG_SAMPLE_VARS = {'KEQ'}
 
+# 可选: 对标论文 Hu et al.(2025) Table 5 的窄采样范围 (KS 仅 1 个数量级, CF 远更易学).
+# 题述范围 KEQ∈[6e4,6.7e7] 跨 3 个数量级、含高刚度离线工况, 比论文难约 100 倍.
+# 置 True 即切到论文范围; ⚠️ 改动后必须重新生成数据集 (pc_to_data.py --full).
+USE_PAPER_KS_RANGE = False
+KS_RANGE_PAPER = (1.0e4, 1.0e5)
+if USE_PAPER_KS_RANGE:
+    INPUT_RANGES['KEQ'] = KS_RANGE_PAPER
+
 # 3 个输出 (时间/空间序列)
 #   Fc      : 弓网接触力      [N]
 #   y_panto : 弓头位移        [m]
@@ -117,9 +125,17 @@ LR_FACTOR = 0.5
 LR_PATIENCE = 6
 LR_MIN = 1e-6
 
+# 各输出通道损失权重 (Fc, y_panto, y_cat).
+# 接触力 Fc 高频、最难学且最关键, 故加大权重, 把模型容量向 Fc 倾斜.
+CHANNEL_LOSS_WEIGHTS = (4.0, 1.0, 1.0)
+
 # MC Dropout (提出模型: TCN+Mamba+蒙特卡洛)
-MC_DROPOUT_P = 0.1
+# p 提到 0.15: 增大预测方差的"可变性", 使不确定性更有信息量 (需重训生效).
+MC_DROPOUT_P = 0.15
 MC_SAMPLES = 50  # 推理时蒙特卡洛前向次数
+# 不确定性后验标定: 在验证集上求每通道缩放因子 k, 使 (均值 ± k·σ) 覆盖率≈目标值.
+CALIBRATE_UQ = True
+UQ_TARGET_COVERAGE = 0.95
 
 # 各模型默认结构超参数
 MODEL_CFG = {

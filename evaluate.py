@@ -23,7 +23,7 @@ import torch
 import config as C
 import metrics as M
 from data_utils import denorm_targets, load_dataset
-from models import build_model
+from models import build_model, build_tuned
 from pc import _use_cjk_font
 
 
@@ -62,12 +62,14 @@ def collect_mc(model, loader, device, y_min, y_max, n_samples):
     return np.concatenate(ys), np.concatenate(means), np.concatenate(stds)
 
 
-def plot_predictions(y_true, y_pred, names, out_path, n_plot=3, std=None):
+def plot_predictions(y_true, y_pred, names, out_path, n_plot=3, std=None, band_mult=2.0):
+    """band_mult: 置信带半宽 = band_mult · σ; 可为标量或逐通道数组 (标定后用)."""
     cjk = _use_cjk_font()
     T = y_true.shape[1]
     x = np.arange(T)
     n_plot = min(n_plot, y_true.shape[0])
     nC = y_true.shape[-1]
+    mult = np.broadcast_to(np.asarray(band_mult, dtype=float), (nC,))
     fig, axes = plt.subplots(n_plot, nC, figsize=(4.5 * nC, 2.6 * n_plot), squeeze=False)
     for r in range(n_plot):
         for c in range(nC):
@@ -77,8 +79,8 @@ def plot_predictions(y_true, y_pred, names, out_path, n_plot=3, std=None):
             ax.plot(x, y_pred[r, :, c], color='C1', lw=1.0, ls='--',
                     label='预测' if cjk else 'Prediction')
             if std is not None:
-                ax.fill_between(x, y_pred[r, :, c] - 2 * std[r, :, c],
-                                y_pred[r, :, c] + 2 * std[r, :, c],
+                half = mult[c] * std[r, :, c]
+                ax.fill_between(x, y_pred[r, :, c] - half, y_pred[r, :, c] + half,
                                 color='C1', alpha=0.2,
                                 label='95% 置信带' if cjk else '95% CI')
             if r == 0:
@@ -104,7 +106,12 @@ def main():
     device = args.device if torch.cuda.is_available() or args.device == 'cpu' else 'cpu'
     ckpt = torch.load(args.ckpt, map_location=device, weights_only=False)
     model_name = ckpt['model_name']
-    model = build_model(model_name).to(device)
+    # 若权重来自 tune.py (含 best_params), 用相同的调优结构重建; 否则用默认结构.
+    if ckpt.get('best_params'):
+        print(f'检测到调优超参, 按 best_params 重建结构: {ckpt["best_params"]}')
+        model = build_tuned(model_name, ckpt['best_params']).to(device)
+    else:
+        model = build_model(model_name).to(device)
     model.load_state_dict(ckpt['state_dict'])
 
     loaders, stats = load_dataset(resolve_data(args.data),
@@ -114,30 +121,60 @@ def main():
 
     print(f'\n评估模型: {model_name}  (测试集)')
     y_true, y_pred = collect_predictions(model, loaders['test'], device, y_min, y_max)
+
+    print('\n[池化口径 / 题述公式] 全测试集逐通道:')
     results = M.compute_all(y_true, y_pred, names)
     print(M.format_table(results))
+
+    print('\n[逐 case 口径 / 对标 Hu et al. 2025] 每 case 单独算再统计:')
+    pc = M.compute_percase(y_true, y_pred, names)
+    print(M.format_percase(pc))
 
     out_dir = Path(C.RESULT_DIR) / 'eval'
     out_dir.mkdir(parents=True, exist_ok=True)
     np.savez(out_dir / f'{model_name}_metrics.npz',
-             **{f'{ch}__{m}': results[ch][m] for ch in results for m in results[ch]})
+             **{f'{ch}__{m}': results[ch][m] for ch in results for m in results[ch]},
+             **{f'percase__{ch}__{m}': pc[ch][m] for ch in pc for m in pc[ch]})
     plot_predictions(y_true, y_pred, names, out_dir / f'{model_name}_pred.png',
                      n_plot=args.n_plot)
 
-    # 提出模型: 蒙特卡洛 Dropout 不确定性量化
+    # 提出模型: 蒙特卡洛 Dropout 不确定性量化 (含验证集后验标定)
     if hasattr(model, 'mc_predict'):
-        print(f'\n[MC Dropout] {args.mc_samples} 次前向采样 ...')
+        nC = len(names)
+        target = C.UQ_TARGET_COVERAGE
+        z = 1.959963985  # 标准正态 95% 双侧分位
+
+        # 1) 在验证集上求每通道标定因子 k: 使 |y-mean|/σ 的 target 分位 = k
+        if C.CALIBRATE_UQ:
+            print(f'\n[MC 标定] 验证集 {args.mc_samples} 次采样, 目标覆盖率 {target:.0%} ...')
+            yv, mv, sv = collect_mc(model, loaders['val'], device, y_min, y_max, args.mc_samples)
+            k = np.empty(nC)
+            for c in range(nC):
+                r = np.abs(yv[..., c] - mv[..., c]) / (sv[..., c] + 1e-12)
+                k[c] = float(np.percentile(r, target * 100.0))
+            print('  逐通道标定因子 k =', {names[c]: round(float(k[c]), 3) for c in range(nC)})
+        else:
+            k = np.full(nC, z)
+
+        # 2) 测试集采样与评估
+        print(f'\n[MC Dropout] 测试集 {args.mc_samples} 次前向采样 ...')
         yt, mean, std = collect_mc(model, loaders['test'], device, y_min, y_max, args.mc_samples)
         mc_results = M.compute_all(yt, mean, names)
         print('MC 均值预测指标:')
         print(M.format_table(mc_results))
-        # 95% 置信带覆盖率
-        lo, hi = mean - 2 * std, mean + 2 * std
+
+        # 3) 标定前(±zσ) vs 标定后(±kσ) 的覆盖率与平均带宽 (MPIW)
+        print(f'  {"通道":<10}{"标定前覆盖":>12}{"标定后覆盖":>12}{"平均σ":>12}{"标定后半宽":>14}')
         for c, nm in enumerate(names):
-            cov = float(np.mean((yt[..., c] >= lo[..., c]) & (yt[..., c] <= hi[..., c])))
-            print(f'  {nm}: 95%置信带覆盖率={cov:.3f}, 平均σ={std[..., c].mean():.4g}')
+            cov0 = float(np.mean(np.abs(yt[..., c] - mean[..., c]) <= z * std[..., c]))
+            cov1 = float(np.mean(np.abs(yt[..., c] - mean[..., c]) <= k[c] * std[..., c]))
+            mpiw = float(np.mean(2 * k[c] * std[..., c]))
+            print(f'  {nm:<10}{cov0:>12.3f}{cov1:>12.3f}{std[..., c].mean():>12.4g}{mpiw:>14.4g}')
+
         plot_predictions(yt, mean, names, out_dir / f'{model_name}_mc_uq.png',
-                         n_plot=args.n_plot, std=std)
+                         n_plot=args.n_plot, std=std, band_mult=k)
+        np.savez(out_dir / f'{model_name}_uq.npz', calib_k=k, target=target,
+                 mean_sigma=std.reshape(-1, nC).mean(0))
 
 
 if __name__ == '__main__':

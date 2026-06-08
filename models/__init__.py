@@ -30,4 +30,26 @@ def build_model(name: str):
     raise ValueError(f'未知模型: {name}; 可选 tcn / lstm / mamba / tcn_mamba')
 
 
+def build_tuned(name: str, p: dict):
+    """从 Optuna 搜索得到的扁平超参字典构建模型 (tune.py / evaluate.py 共用)."""
+    name = name.lower()
+    ci, co = C.IN_CHANNELS, C.OUT_CHANNELS
+    if name == 'tcn':
+        return TCNModel(ci, co, channels=tuple([p['width']] * p['depth']),
+                        kernel_size=p['kernel'], dropout=p['dropout'])
+    if name == 'lstm':
+        return LSTMModel(ci, co, hidden_size=p['hidden'], num_layers=p['layers'],
+                         dropout=p['dropout'], bidirectional=True)
+    if name == 'mamba':
+        from .mamba_model import MambaModel
+        return MambaModel(ci, co, d_model=p['d_model'], n_layers=p['n_layers'],
+                          d_state=p['d_state'], dropout=p['dropout'])
+    if name in ('tcn_mamba', 'tcnmamba', 'proposed'):
+        from .tcn_mamba import TCNMambaMC
+        return TCNMambaMC(ci, co, tcn_channels=tuple([p['tcn_width']] * p['tcn_depth']),
+                          tcn_kernel=p['kernel'], d_model=p['d_model'], n_mamba=p['n_mamba'],
+                          d_state=p['d_state'], dropout=p['dropout'])
+    raise ValueError(f'未知模型: {name}')
+
+
 MODEL_NAMES = ('tcn', 'lstm', 'mamba', 'tcn_mamba')

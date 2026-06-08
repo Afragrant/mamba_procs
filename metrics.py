@@ -113,3 +113,51 @@ def format_table(results: dict) -> str:
         line = r.ljust(w) + ''.join(f'{results[r][m]:12.5g}' for m in metrics)
         lines.append(line)
     return '\n'.join(lines)
+
+
+# --------------------------------------------------------------------------- #
+# 逐 case (per-case) 指标 —— 对标 Hu et al.(2025) 的口径
+#   论文 Table 6: 对每个 case 单独算 RMSE/R², 再对所有 case 求 均值 与 标准差.
+#   论文 Table 7: 对每个 case 算 RDE_Std / RDE_Ave, 报告所有 case 的 Max% 与 Ave%.
+#   注: 论文 Eq.29 的 RMSE 含开方 (标准 RMSE), 此处逐 case 用标准 RMSE 以与论文一致;
+#       与 compute_all 中"题述口径"(RMSE=MSE) 并存, 互不影响.
+# --------------------------------------------------------------------------- #
+def compute_percase(y_true: np.ndarray, y_pred: np.ndarray, channel_names=None) -> dict:
+    """y_true / y_pred: (N, T, C). 返回 {通道: {指标统计}} (全向量化)."""
+    y_true = np.asarray(y_true, dtype=np.float64)
+    y_pred = np.asarray(y_pred, dtype=np.float64)
+    if channel_names is None:
+        channel_names = C.OUTPUT_NAMES
+    N, T, nC = y_true.shape
+    out = {}
+    for c in range(nC):
+        a = y_true[:, :, c]        # (N, T)
+        b = y_pred[:, :, c]
+        ss_res = np.sum((a - b) ** 2, axis=1)
+        ss_tot = np.sum((a - a.mean(axis=1, keepdims=True)) ** 2, axis=1)
+        r2 = 1.0 - ss_res / (ss_tot + _EPS)
+        rmse = np.sqrt(np.mean((a - b) ** 2, axis=1))   # 标准 RMSE (含开方, 同论文)
+        rmae = np.mean(np.abs(a - b), axis=1)
+        sp, ss = b.std(axis=1), a.std(axis=1)
+        mp, ms = b.mean(axis=1), a.mean(axis=1)
+        rde_std = (sp - ss) / (sp + _EPS) * 100.0
+        rde_ave = (mp - ms) / (mp + _EPS) * 100.0
+        out[channel_names[c]] = {
+            'R2_mean': float(r2.mean()), 'R2_std': float(r2.std()),
+            'RMSE_mean': float(rmse.mean()), 'RMSE_std': float(rmse.std()),
+            'RMAE_mean': float(rmae.mean()),
+            'RDE_Std_Max%': float(np.abs(rde_std).max()), 'RDE_Std_Ave%': float(np.abs(rde_std).mean()),
+            'RDE_Ave_Max%': float(np.abs(rde_ave).max()), 'RDE_Ave_Ave%': float(np.abs(rde_ave).mean()),
+        }
+    return out
+
+
+def format_percase(results: dict) -> str:
+    cols = ['R2_mean', 'R2_std', 'RMSE_mean', 'RMSE_std',
+            'RDE_Std_Max%', 'RDE_Std_Ave%', 'RDE_Ave_Max%', 'RDE_Ave_Ave%']
+    w = max(len(r) for r in results) + 2
+    header = 'channel'.ljust(w) + ''.join(c.rjust(13) for c in cols)
+    lines = [header, '-' * len(header)]
+    for r in results:
+        lines.append(r.ljust(w) + ''.join(f'{results[r][c]:13.5g}' for c in cols))
+    return '\n'.join(lines)
