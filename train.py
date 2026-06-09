@@ -69,6 +69,8 @@ def train(model_name, data_path, epochs, batch_size, lr, device, out_ckpt):
     set_seed(C.SEED)
     loaders, stats = load_dataset(data_path, batch_size=batch_size)
     model = build_model(model_name).to(device)
+    if hasattr(model, 'set_norm_stats'):   # 物理约束模型需注入 Min-Max 统计量
+        model.set_norm_stats(stats)
     n_params = sum(p.numel() for p in model.parameters())
     print(f'模型 {model_name}: {n_params:,} 参数  | 设备 {device}')
 
@@ -134,7 +136,8 @@ def train(model_name, data_path, epochs, batch_size, lr, device, out_ckpt):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--model', required=True, choices=['tcn', 'lstm', 'mamba', 'tcn_mamba'])
+    ap.add_argument('--model', required=True,
+                    choices=['tcn', 'lstm', 'mamba', 'tcn_mamba', 'pc_tcn_mamba'])
     ap.add_argument('--data', default='smoke', help='smoke / full / npz 路径')
     ap.add_argument('--epochs', type=int, default=C.EPOCHS)
     ap.add_argument('--batch-size', type=int, default=C.BATCH_SIZE)

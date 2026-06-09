@@ -41,7 +41,7 @@ def suggest_params(trial, name):
         p['d_model'] = trial.suggest_categorical('d_model', [64, 128, 192, 256])
         p['n_layers'] = trial.suggest_int('n_layers', 2, 6)
         p['d_state'] = trial.suggest_categorical('d_state', [16, 32, 64])
-    elif name == 'tcn_mamba':
+    elif name in ('tcn_mamba', 'pc_tcn_mamba'):
         p['tcn_width'] = trial.suggest_categorical('tcn_width', [48, 64, 96, 128])
         p['tcn_depth'] = trial.suggest_int('tcn_depth', 1, 3)
         p['kernel'] = trial.suggest_categorical('kernel', [3, 5, 7])
@@ -94,7 +94,8 @@ def train_short(model, loaders, lr, device, epochs, trial=None, restore_best=Fal
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--model', required=True, choices=['tcn', 'lstm', 'mamba', 'tcn_mamba'])
+    ap.add_argument('--model', required=True,
+                    choices=['tcn', 'lstm', 'mamba', 'tcn_mamba', 'pc_tcn_mamba'])
     ap.add_argument('--data', default='full')
     ap.add_argument('--trials', type=int, default=40)
     ap.add_argument('--tune-epochs', type=int, default=25)
@@ -110,6 +111,8 @@ def main():
     def objective(trial):
         p = suggest_params(trial, args.model)
         model = build_from_params(args.model, p).to(device)
+        if hasattr(model, 'set_norm_stats'):
+            model.set_norm_stats(stats)
         return train_short(model, loaders, p['lr'], device, args.tune_epochs, trial)
 
     study = optuna.create_study(direction='minimize',
@@ -127,6 +130,8 @@ def main():
         print('\n用最优超参全量重训 ...')
         p = study.best_params
         model = build_from_params(args.model, p).to(device)
+        if hasattr(model, 'set_norm_stats'):
+            model.set_norm_stats(stats)
         best = train_short(model, loaders, p['lr'], device, args.final_epochs, restore_best=True)
         ckpt = C.CKPT_DIR / f'{args.model}.pt'
         torch.save({'model_name': args.model, 'state_dict': model.state_dict(),

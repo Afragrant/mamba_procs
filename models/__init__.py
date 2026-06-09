@@ -24,10 +24,13 @@ def build_model(name: str):
     if name == 'mamba':
         from .mamba_model import MambaModel
         return MambaModel(C.IN_CHANNELS, C.OUT_CHANNELS, **cfg['mamba'])
-    if name in ('tcn_mamba', 'tcnmamba', 'proposed'):
+    if name in ('tcn_mamba', 'tcnmamba'):
         from .tcn_mamba import build_tcn_mamba
         return build_tcn_mamba(C.IN_CHANNELS, C.OUT_CHANNELS, **cfg['tcn_mamba'])
-    raise ValueError(f'未知模型: {name}; 可选 tcn / lstm / mamba / tcn_mamba')
+    if name in ('pc_tcn_mamba', 'pctcnmamba', 'proposed'):
+        from .pc_tcn_mamba import build_pc_tcn_mamba
+        return build_pc_tcn_mamba(C.IN_CHANNELS, C.OUT_CHANNELS, **cfg['pc_tcn_mamba'])
+    raise ValueError(f'未知模型: {name}; 可选 tcn / lstm / mamba / tcn_mamba / pc_tcn_mamba')
 
 
 def build_tuned(name: str, p: dict):
@@ -44,11 +47,16 @@ def build_tuned(name: str, p: dict):
         from .mamba_model import MambaModel
         return MambaModel(ci, co, d_model=p['d_model'], n_layers=p['n_layers'],
                           d_state=p['d_state'], dropout=p['dropout'])
-    if name in ('tcn_mamba', 'tcnmamba', 'proposed'):
+    if name in ('tcn_mamba', 'tcnmamba'):
         from .tcn_mamba import TCNMambaMC
         return TCNMambaMC(ci, co, tcn_channels=tuple([p['tcn_width']] * p['tcn_depth']),
                           tcn_kernel=p['kernel'], d_model=p['d_model'], n_mamba=p['n_mamba'],
                           d_state=p['d_state'], dropout=p['dropout'])
+    if name in ('pc_tcn_mamba', 'pctcnmamba', 'proposed'):
+        from .pc_tcn_mamba import PCTCNMambaMC
+        return PCTCNMambaMC(ci, co, tcn_channels=tuple([p['tcn_width']] * p['tcn_depth']),
+                            tcn_kernel=p['kernel'], d_model=p['d_model'], n_mamba=p['n_mamba'],
+                            d_state=p['d_state'], dropout=p['dropout'])
     raise ValueError(f'未知模型: {name}')
 
 

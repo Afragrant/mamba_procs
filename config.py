@@ -129,6 +129,13 @@ LR_MIN = 1e-6
 # 接触力 Fc 高频、最难学且最关键, 故加大权重, 把模型容量向 Fc 倾斜.
 CHANNEL_LOSS_WEIGHTS = (4.0, 1.0, 1.0)
 
+# 物理约束 (Physics-Constrained) 模型 PC-TCN-Mamba 用的接触弹簧刚度常量.
+# pc.py: contact_force = KS * relu(y_panto - y_cat), KS=82300 (固定接触界面参数,
+# 与设计变量"支撑刚度 KEQ"无关). PC 模型把该精确本构关系内嵌进输出层:
+#   gap = y_panto - y_cat;  Fc = CONTACT_KC * relu(gap)
+# 从而保证 Fc≥0、离线精确为零、三量物理一致, 并直接优化无抵消的 gap.
+CONTACT_KC = 82300.0
+
 # MC Dropout (提出模型: TCN+Mamba+蒙特卡洛)
 # p 提到 0.15: 增大预测方差的"可变性", 使不确定性更有信息量 (需重训生效).
 MC_DROPOUT_P = 0.15
@@ -143,6 +150,17 @@ MODEL_CFG = {
     'lstm': dict(hidden_size=128, num_layers=2, dropout=0.1, bidirectional=True),
     'mamba': dict(d_model=128, n_layers=4, d_state=16, d_conv=4, expand=2, dropout=0.1),
     'tcn_mamba': dict(
+        tcn_channels=(64, 64),
+        tcn_kernel=5,
+        d_model=128,
+        n_mamba=4,
+        d_state=16,
+        d_conv=4,
+        expand=2,
+        dropout=MC_DROPOUT_P,
+    ),
+    # 提出模型: 物理约束 PC-TCN-Mamba (结构同 tcn_mamba, 仅输出层换成物理推导)
+    'pc_tcn_mamba': dict(
         tcn_channels=(64, 64),
         tcn_kernel=5,
         d_model=128,

@@ -104,6 +104,11 @@ def load_dataset(npz_path, batch_size: int = C.BATCH_SIZE, num_workers: int = C.
         'val': make(idx_va, False),
         'test': make(idx_te, False),
     }
+    # gap = y_panto - y_cat 的 Min-Max (训练集上), 供物理约束模型 PC-TCN-Mamba 反归一化用
+    gap_train = (targets[idx_tr, :, 1] - targets[idx_tr, :, 2])
+    gap_min, gap_max = float(gap_train.min()), float(gap_train.max())
+
     stats = dict(x_min=x_min, x_max=x_max, y_min=y_min, y_max=y_max,
+                 gap_min=gap_min, gap_max=gap_max,
                  input_names=list(data['input_names']), output_names=list(data['output_names']))
     return loaders, stats

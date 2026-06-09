@@ -37,18 +37,28 @@ def r2_score(y_true, y_pred) -> float:
     return float(1.0 - ss_res / (ss_tot + _EPS))
 
 
+def _safe_den(pred, ref):
+    """分母下限保护: 题述 RDE 以"预测值"为分母, 当预测统计量≈0 时会爆炸.
+    用仿真值 ref 的一个小比例做下限 (保号), 把退化情形限制在合理量级.
+    """
+    floor = 1e-3 * abs(ref) + _EPS
+    if abs(pred) >= floor:
+        return pred
+    return floor if pred >= 0 else -floor
+
+
 def rde_std(y_true, y_pred) -> float:
     """标准差相对偏差 (%) = (std_pred - std_sim)/std_pred * 100."""
     s_pred = _flat(y_pred).std()
     s_sim = _flat(y_true).std()
-    return float((s_pred - s_sim) / (s_pred + _EPS) * 100.0)
+    return float((s_pred - s_sim) / _safe_den(s_pred, s_sim) * 100.0)
 
 
 def rde_ave(y_true, y_pred) -> float:
     """均值相对偏差 (%) = (mean_pred - mean_sim)/mean_pred * 100."""
     m_pred = _flat(y_pred).mean()
     m_sim = _flat(y_true).mean()
-    return float((m_pred - m_sim) / (m_pred + _EPS) * 100.0)
+    return float((m_pred - m_sim) / _safe_den(m_pred, m_sim) * 100.0)
 
 
 def rmse_msq(y_true, y_pred) -> float:
@@ -140,8 +150,13 @@ def compute_percase(y_true: np.ndarray, y_pred: np.ndarray, channel_names=None) 
         rmae = np.mean(np.abs(a - b), axis=1)
         sp, ss = b.std(axis=1), a.std(axis=1)
         mp, ms = b.mean(axis=1), a.mean(axis=1)
-        rde_std = (sp - ss) / (sp + _EPS) * 100.0
-        rde_ave = (mp - ms) / (mp + _EPS) * 100.0
+        # 分母下限保护 (同 _safe_den, 向量化): 防止预测统计量≈0 时 RDE 爆炸
+        den_s = np.where(np.abs(sp) >= 1e-3 * np.abs(ss) + _EPS, sp,
+                         np.copysign(1e-3 * np.abs(ss) + _EPS, np.where(sp >= 0, 1.0, -1.0)))
+        den_m = np.where(np.abs(mp) >= 1e-3 * np.abs(ms) + _EPS, mp,
+                         np.copysign(1e-3 * np.abs(ms) + _EPS, np.where(mp >= 0, 1.0, -1.0)))
+        rde_std = (sp - ss) / den_s * 100.0
+        rde_ave = (mp - ms) / den_m * 100.0
         out[channel_names[c]] = {
             'R2_mean': float(r2.mean()), 'R2_std': float(r2.std()),
             'RMSE_mean': float(rmse.mean()), 'RMSE_std': float(rmse.std()),

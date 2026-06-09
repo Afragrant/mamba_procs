@@ -116,6 +116,8 @@ def main():
 
     loaders, stats = load_dataset(resolve_data(args.data),
                                   batch_size=C.BATCH_SIZE, num_workers=2)
+    if hasattr(model, 'set_norm_stats'):   # 物理约束模型需注入 Min-Max 统计量
+        model.set_norm_stats(stats)
     y_min, y_max = stats['y_min'], stats['y_max']
     names = stats['output_names']
 
@@ -144,14 +146,25 @@ def main():
         target = C.UQ_TARGET_COVERAGE
         z = 1.959963985  # 标准正态 95% 双侧分位
 
-        # 1) 在验证集上求每通道标定因子 k: 使 |y-mean|/σ 的 target 分位 = k
+        # 1) 在验证集上求每通道标定因子 k, 使 (均值 ± k·σ) 的覆盖率≈target.
+        #    用"覆盖率二分搜索 + σ下限"代替 |y-mean|/σ 分位: 物理约束模型在离线区
+        #    Fc 恒为 0 且 MC 方差为 0, 直接除 σ 会爆炸; 此法数值稳健且不除 σ.
         if C.CALIBRATE_UQ:
             print(f'\n[MC 标定] 验证集 {args.mc_samples} 次采样, 目标覆盖率 {target:.0%} ...')
             yv, mv, sv = collect_mc(model, loaders['val'], device, y_min, y_max, args.mc_samples)
             k = np.empty(nC)
             for c in range(nC):
-                r = np.abs(yv[..., c] - mv[..., c]) / (sv[..., c] + 1e-12)
-                k[c] = float(np.percentile(r, target * 100.0))
+                scale = float(np.asarray(y_max)[c] - np.asarray(y_min)[c])
+                sfloor = sv[..., c] + 1e-4 * scale          # σ 下限, 防止除 0/极端
+                resid = np.abs(yv[..., c] - mv[..., c])
+                lo, hi = 0.0, 1.0e6
+                for _ in range(60):                          # 二分: 覆盖率关于 k 单调
+                    mid = 0.5 * (lo + hi)
+                    if np.mean(resid <= mid * sfloor) < target:
+                        lo = mid
+                    else:
+                        hi = mid
+                k[c] = hi
             print('  逐通道标定因子 k =', {names[c]: round(float(k[c]), 3) for c in range(nC)})
         else:
             k = np.full(nC, z)
