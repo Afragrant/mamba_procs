@@ -84,11 +84,19 @@ class CatenaryDataset(Dataset):
 # --------------------------------------------------------------------------- #
 def load_dataset(npz_path, batch_size: int = C.BATCH_SIZE, num_workers: int = C.NUM_WORKERS):
     data = np.load(npz_path, allow_pickle=True)
-    design = data['design']        # (N, 5) 原始物理值
+    design = data['design'].astype(np.float64).copy()  # (N, 5) 原始物理值; 拷贝以免污染npz
     targets = data['targets']      # (N, T, 3) 原始物理值
     idx_tr, idx_va, idx_te = data['idx_train'], data['idx_val'], data['idx_test']
-    x_min, x_max = data['x_min'], data['x_max']
+    x_min, x_max = data['x_min'].astype(np.float64).copy(), data['x_max'].astype(np.float64).copy()
     y_min, y_max = data['y_min'], data['y_max']
+
+    # 跨数量级变量 (LOG_NORM_VARS) 先取 log10 再 Min-Max: 让 log10(x) 均匀铺到 [-1,1].
+    # design 与对应的 x_min/x_max 边界同步取 log, 归一化公式不变. (无逆变换需求: 输入
+    # 从不反归一化.) LOG_NORM_VARS 为空时此循环为 no-op, 退化回纯线性 Min-Max.
+    for name in C.LOG_NORM_VARS:
+        j = C.INPUT_NAMES.index(name)
+        design[:, j] = np.log10(design[:, j])
+        x_min[j], x_max[j] = np.log10(x_min[j]), np.log10(x_max[j])
 
     design_n = minmax_norm(design, x_min, x_max).astype(np.float32)
     targets_n = minmax_norm(targets, y_min, y_max).astype(np.float32)

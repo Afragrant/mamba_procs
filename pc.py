@@ -4,14 +4,14 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib import font_manager
-from scipy.linalg import solve
+from scipy.linalg import cho_factor, cho_solve, solve
 from tqdm import tqdm
 
-PANTOGRAPH = 1  # 受电弓模型 1–4; 1 = DSA380; 2 = DSA250;
-RIGID_OVERHEAD_CONTACT_SYSTEM = 1  # 刚性接触网参数 1–4
-SPEED_KMH = 200  # 列车速度 [km/h]
-NM = 200  # 模态数
-DT_BASE = 0.00001  # 时间步 [s]
+PANTOGRAPH = 2  # 受电弓模型 1–4; 1 = DSA380; 2 = DSA250;
+RIGID_OVERHEAD_CONTACT_SYSTEM = 3  # 刚性接触网参数 1–4
+SPEED_KMH = 223.1  # 列车速度 [km/h]
+NM = 150  # 模态数
+DT_BASE = 0.0001  # 时间步 [s]
 G = 9.8  # 重力 [m/s²]
 
 # KS 为受电弓–接触网之间的接触弹簧刚度 (接触界面参数), 不属于刚性接触网基础设施,
@@ -58,8 +58,8 @@ def rigid_overhead_contact_system_params(rigid_overhead_contact_system: int, N_s
         # L,    N,  rhoA, EI,       KEQ,  MEQ, MZ,   L_MZ
         1: (8.0, 30, 8.1, 1.7e5, 6.7e7, 7.0, 2.84, 12.0),
         2: (8.5, 30, 7.1, 2.7e5, 6e5, 7.0, 2.84, 12.0),
-        3: (8.0, 30, 7.25, 2.69e5, 6e4, 7.0, 2.84, 12.0),
-        4: (8.0, 30, 7.35, 2.16e5, 3.7788e7, 7.0, 2.84, 12.0),
+        3: (8, 30, 7.25, 2.69e5, 6e4, 7.0, 2.84, 12.0),
+        4: (8.0, 30, 7.35, 2.16e5, 3.7788e7, 2.7692, 2.84, 12.0),
     }
     if rigid_overhead_contact_system not in table:
         raise ValueError(
@@ -135,30 +135,25 @@ def run_simulation(
     speed_kmh: float = SPEED_KMH,
     NM: int = NM,
     N_spans: int = 30,
+    catenary_params=None,
     dt_base: float = DT_BASE,
     irregularity: bool = False,
     wear_amplitude: float = WEAR_AMPLITUDE,
     wear_wavelength: float = WEAR_WAVELENGTH,
-    catenary_params: tuple | None = None,
     verbose: bool = True,
 ):
     """Run the pantograph–overhead contact system simulation and return result arrays.
 
-    ``catenary_params``: optional ``(L, rhoA, EI, KEQ, MEQ)`` override. When given,
-    these values are used directly instead of the preset table (N from ``N_spans``,
-    MZ/L_MZ from the shared defaults). Used by the dataset generator to draw the
-    continuous (Latin-Hypercube) training samples; the 4 presets still go through
-    ``rigid_overhead_contact_system``.
+    catenary_params: optional tuple (L, rhoA, EI, KEQ, MEQ) that overrides the preset
+        table lookup. MZ and L_MZ default to 2.84 and 12.0 (shared by all presets).
+        When None, rigid_overhead_contact_system selects the preset.
     """
-
     if catenary_params is not None:
         L, rhoA, EI, KEQ, MEQ = catenary_params
         N = N_spans
-        MZ, L_MZ = 2.84, 12.0
+        MZ, L_MZ = 2.84, 12.0  # fixed for all standard presets
     else:
-        L, N, rhoA, EI, KEQ, MEQ, MZ, L_MZ = rigid_overhead_contact_system_params(
-            rigid_overhead_contact_system, N_spans
-        )
+        L, N, rhoA, EI, KEQ, MEQ, MZ, L_MZ = rigid_overhead_contact_system_params(rigid_overhead_contact_system, N_spans)
     m1, m2, m3, k1, k2, k3, c1, c2, c3, F0 = pantograph_params(pantograph, speed_kmh)
 
     v = speed_kmh / 3.6  # [m/s]
@@ -247,6 +242,21 @@ def run_simulation(
     F_base[:3] = F_p
     F_base[3:] = F_gravity
 
+    # Woodbury 预计算: Newmark 常量系数 + 无接触系统矩阵 P 的 Cholesky 分解.
+    # 每步有效矩阵 Kt = P + KS·w wᵀ (秩-1 接触), 用 Sherman-Morrison 把 O(n³) 解降为 O(n²).
+    beta_nm, gamma_nm = 0.25, 0.5
+    a0 = 1.0 / (beta_nm * dt * dt)
+    a1 = gamma_nm / (beta_nm * dt)
+    a2 = 1.0 / (beta_nm * dt)
+    a3 = 1.0 / (2.0 * beta_nm) - 1.0
+    a4 = gamma_nm / beta_nm - 1.0
+    a5 = dt * (gamma_nm / (2.0 * beta_nm) - 1.0)
+    a6 = dt * (1.0 - gamma_nm)
+    a7 = gamma_nm * dt
+    cP = cho_factor(K_sys + a0 * M_sys + a1 * C_sys, check_finite=False)  # 一次性分解, 各步复用
+    w_buf = np.zeros(n_dof)
+    w_buf[0] = 1.0  # w = [1, 0, 0, -φ]; 接触步内原地写入 w[3:]
+
     def phi_at(x):
         return norm_factor * np.sin(modes * np.pi * x / LS)
 
@@ -281,14 +291,6 @@ def run_simulation(
     y_pantograph[0] = Y[0]
     y_rigid_overhead_contact_system[0] = u_c_0
 
-    def build_Kc(phi_vec):
-        Kc = np.zeros((n_dof, n_dof))
-        Kc[0, 0] = KS
-        Kc[0, 3:] = -KS * phi_vec
-        Kc[3:, 0] = -KS * phi_vec
-        Kc[3:, 3:] = KS * np.outer(phi_vec, phi_vec)
-        return Kc
-
     t_start = time.time()
     for k in tqdm(range(1, n_steps), desc='Simulating', unit='step', disable=not verbose):
         xc = x_vec[k]
@@ -299,21 +301,27 @@ def run_simulation(
 
         # Prediction step decides contact state for the current assembly
         Y_pred = Y + dt * V + 0.5 * dt * dt * A
-        real_disp = Y_pred[0] - phi @ Y_pred[3:] - w_cw
-        in_contact = real_disp > 0.0
+        in_contact = (Y_pred[0] - phi @ Y_pred[3:] - w_cw) > 0.0
 
-        if in_contact:
-            Kc = build_Kc(phi)
-            # 磨耗 w_cw 等效为接触弹簧的常量预压量，加到激励向量上
+        F_eff = F_base
+        if in_contact and w_cw != 0.0:  # 磨耗等效为接触弹簧的常量预压量，加到激励向量上
             F_eff = F_base.copy()
             F_eff[0] += KS * w_cw
             F_eff[3:] -= KS * phi * w_cw
-        else:
-            Kc = np.zeros((n_dof, n_dof))
-            F_eff = F_base
-        K_eff = K_sys + Kc
 
-        Y, V, A = newmark_step(M_sys, C_sys, K_eff, F_eff, Y, V, A, dt)
+        # Newmark 有效载荷; 有效矩阵 Kt = P + KS·w wᵀ, P 已预分解 → Sherman-Morrison
+        Ft = F_eff + M_sys @ (a0 * Y + a2 * V + a3 * A) + C_sys @ (a1 * Y + a4 * V + a5 * A)
+        u = cho_solve(cP, Ft, check_finite=False)
+        if in_contact:  # 秩-1 接触更新
+            w_buf[3:] = -phi
+            z = cho_solve(cP, w_buf, check_finite=False)
+            Y_new = u - KS * (w_buf @ u) / (1.0 + KS * (w_buf @ z)) * z
+        else:
+            Y_new = u
+        A_new = a0 * (Y_new - Y) - a2 * V - a3 * A
+        V = V + a6 * A + a7 * A_new
+        A = A_new
+        Y = Y_new
 
         u_c_new = phi @ Y[3:]
         rel = Y[0] - u_c_new - w_cw

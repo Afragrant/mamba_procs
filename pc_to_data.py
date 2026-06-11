@@ -6,9 +6,6 @@
   3. 将稳定段重采样到固定长度 SEQ_LEN (稳定段恒覆盖 0.4*N_SPANS=12 跨, 相位对齐);
   4. 写出 .npz: 设计参数 (N,5)、目标序列 (N,T,3)、划分索引、归一化统计量.
 
-多进程并行 (默认用全部物理核). 单样本耗时 ~5s (NM=100, dt=4e-5),
-20000 样本在 24 核上约 5 小时.
-
 用法:
     python pc_to_data.py --smoke           # 200 样本冒烟测试 -> data/dataset_smoke.npz
     python pc_to_data.py --full            # 20000 样本正式集 -> data/dataset_full.npz
@@ -27,8 +24,10 @@ for _v in ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS', 'NUMEXP
 import argparse
 import time
 from multiprocessing import Pool
+from pathlib import Path
 
 import numpy as np
+from scipy.signal import butter, filtfilt
 from scipy.stats import qmc
 
 import config as C
@@ -59,10 +58,20 @@ def latin_hypercube(n: int, seed: int) -> np.ndarray:
 
 
 def _resample(arr: np.ndarray, t: int) -> np.ndarray:
-    """把任意长度序列线性重采样到长度 t."""
-    src = np.linspace(0.0, 1.0, num=len(arr))
-    dst = np.linspace(0.0, 1.0, num=t)
-    return np.interp(dst, src, arr)
+    """重采样到长度 t. 降采样时先零相位低通抗混叠, 再线性插值.
+
+    截止设在输出 Nyquist (t/n), Butterworth 4 阶 + filtfilt 零相位; padlen=n//10
+    给足反射补边, 避免低截止滤波在首尾产生瞬态 (边界误差≈0). filtfilt 为 O(n),
+    与序列长度是否和 t 互质无关 (不会像 resample_poly 那样退化成百万抽头 FIR).
+    上采样 (n<=t) 无混叠风险, 直接线性插值.
+    """
+    n = len(arr)
+    src = np.linspace(0.0, 1.0, n)
+    dst = np.linspace(0.0, 1.0, t)
+    if n > t:
+        b, a = butter(4, t / n)
+        arr = filtfilt(b, a, arr.astype(np.float64), padlen=min(n - 1, n // 10))
+    return np.interp(dst, src, arr).astype(np.float32)
 
 
 # --------------------------------------------------------------------------- #
@@ -72,7 +81,7 @@ def simulate_one(args: tuple[int, np.ndarray]) -> tuple[int, np.ndarray | None]:
     idx, design = args
     keq, l, v, ei, rhoa = (float(x) for x in design)
     try:
-        # run_simulation 的 catenary_params 顺序 = (L, rhoA, EI, KEQ, MEQ)
+        # catenary_params 顺序与 pc.run_simulation 签名一致: (L, rhoA, EI, KEQ, MEQ)
         res = run_simulation(
             catenary_params=(l, rhoa, ei, keq, MEQ_FIXED),
             pantograph=C.PANTOGRAPH_TYPE,
@@ -133,8 +142,9 @@ def generate(n: int, split: dict, out_path, workers: int, seed: int):
                 el = time.time() - t0
                 rate = completed / el
                 eta = (n - completed) / rate if rate > 0 else 0
-                print(f'  [{completed:>6}/{n}] ok={done.sum():>6} '
-                      f'{el / 60:6.1f} min  ETA {eta / 60:6.1f} min', flush=True)
+                print(
+                    f'  [{completed:>6}/{n}] ok={done.sum():>6} {el / 60:6.1f} min  ETA {eta / 60:6.1f} min', flush=True
+                )
 
     # 补采样替换失败样本: 对失败位重新抽取设计参数并重跑, 直到全部成功
     if not done.all():
@@ -169,18 +179,25 @@ def generate(n: int, split: dict, out_path, workers: int, seed: int):
 
     stats = compute_norm_stats(design[idx_tr], targets[idx_tr])
 
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
         out_path,
         design=design.astype(np.float32),
         targets=targets.astype(np.float32),
-        idx_train=idx_tr, idx_val=idx_va, idx_test=idx_te,
-        input_names=np.array(C.INPUT_NAMES), output_names=np.array(C.OUTPUT_NAMES),
-        seq_len=C.SEQ_LEN, nm=C.NM, dt=C.DT_BASE,
-        x_min=stats['x_min'], x_max=stats['x_max'],
-        y_min=stats['y_min'], y_max=stats['y_max'],
+        idx_train=idx_tr,
+        idx_val=idx_va,
+        idx_test=idx_te,
+        input_names=np.array(C.INPUT_NAMES),
+        output_names=np.array(C.OUTPUT_NAMES),
+        seq_len=C.SEQ_LEN,
+        nm=C.NM,
+        dt=C.DT_BASE,
+        x_min=stats['x_min'],
+        x_max=stats['x_max'],
+        y_min=stats['y_min'],
+        y_max=stats['y_max'],
     )
-    np.savez(C.NORM_STATS, **stats,
-             input_names=np.array(C.INPUT_NAMES), output_names=np.array(C.OUTPUT_NAMES))
+    np.savez(C.NORM_STATS, **stats, input_names=np.array(C.INPUT_NAMES), output_names=np.array(C.OUTPUT_NAMES))
     print(f'已写出: {out_path}  (train={n_tr}, val={n_va}, test={n_te})')
     print(f'归一化统计量: {C.NORM_STATS}')
     print(f'  输出通道 y_min={stats["y_min"]}, y_max={stats["y_max"]}')
