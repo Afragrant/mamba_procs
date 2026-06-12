@@ -90,6 +90,8 @@ def main():
     device = args.device if torch.cuda.is_available() or args.device == 'cpu' else 'cpu'
     ckpt = torch.load(args.ckpt, map_location=device, weights_only=False)
     model_name = ckpt['model_name']
+    # 产物按 ckpt 文件名(含 tag, 如 cnn_mamba3_full)命名, 避免同名模型的消融互相覆盖.
+    run_tag = Path(args.ckpt).stem
     # 若权重来自 tune.py (含 best_params), 用相同的调优结构重建; 否则用默认结构.
     if ckpt.get('best_params'):
         print(f'检测到调优超参, 按 best_params 重建结构: {ckpt["best_params"]}')
@@ -103,7 +105,7 @@ def main():
     y_min, y_max = stats['y_min'], stats['y_max']
     names = stats['output_names']
 
-    print(f'\n评估模型: {model_name}  (测试集)')
+    print(f'\n评估模型: {run_tag}  (测试集)')
     y_true, y_pred = collect_predictions(model, loaders['test'], device, y_min, y_max)
 
     print('\n[池化口径 / 题述公式] 全测试集逐通道:')
@@ -116,10 +118,10 @@ def main():
 
     out_dir = Path(C.RESULT_DIR) / 'eval'
     out_dir.mkdir(parents=True, exist_ok=True)
-    np.savez(out_dir / f'{model_name}_metrics.npz',
+    np.savez(out_dir / f'{run_tag}_metrics.npz',
              **{f'{ch}__{m}': results[ch][m] for ch in results for m in results[ch]},
              **{f'percase__{ch}__{m}': pc[ch][m] for ch in pc for m in pc[ch]})
-    plot_predictions(y_true, y_pred, names, out_dir / f'{model_name}_pred.png',
+    plot_predictions(y_true, y_pred, names, out_dir / f'{run_tag}_pred.png',
                      n_plot=args.n_plot)
 
 

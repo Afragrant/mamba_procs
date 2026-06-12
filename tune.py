@@ -42,11 +42,13 @@ def suggest_params(trial, name):
         p['d_state'] = trial.suggest_categorical('d_state', [32, 64, 128])
         p['headdim'] = trial.suggest_categorical('headdim', [32, 64])
     elif name == 'cnn_mamba3':
-        # 存 code 字符串, build_tuned 据 CNN_*_OPTS 还原成元组
+        # 存 code 字符串, build_tuned 据 CNN_*_OPTS 还原成元组.
+        # 注: 双向版每配置算力约 2x, d_model 下限抬到 128 (避免搜索退化到最小容量,
+        # 与大基线 lstm/mamba3 不公平); n_mamba 上限收到 4, 保证在调参轮数内能收敛.
         p['cnn_channels'] = trial.suggest_categorical('cnn_channels', ['a', 'b', 'c'])
         p['cnn_kernels'] = trial.suggest_categorical('cnn_kernels', ['a', 'b', 'c'])
-        p['d_model'] = trial.suggest_categorical('d_model', [64, 128, 192, 256])
-        p['n_mamba'] = trial.suggest_int('n_mamba', 2, 6)
+        p['d_model'] = trial.suggest_categorical('d_model', [128, 192, 256])
+        p['n_mamba'] = trial.suggest_int('n_mamba', 2, 4)
         p['d_state'] = trial.suggest_categorical('d_state', [32, 64, 128])
         p['headdim'] = trial.suggest_categorical('headdim', [32, 64])
     return p
@@ -99,7 +101,7 @@ def main():
     ap.add_argument('--model', required=True, choices=['tcn', 'lstm', 'mamba3', 'cnn_mamba3'])
     ap.add_argument('--data', default='full')
     ap.add_argument('--trials', type=int, default=40)
-    ap.add_argument('--tune-epochs', type=int, default=25)
+    ap.add_argument('--tune-epochs', type=int, default=35)
     ap.add_argument('--final-epochs', type=int, default=C.EPOCHS, help='--final-train 时的训练轮数')
     ap.add_argument('--device', default=C.DEVICE)
     ap.add_argument('--final-train', action='store_true', help='用最优超参全量重训并保存权重')
@@ -134,7 +136,11 @@ def main():
         model = build_from_params(args.model, p).to(device)
         return train_short(model, loaders, p['lr'], device, args.tune_epochs, stats, trial=trial)
 
-    study = optuna.create_study(direction='minimize', pruner=optuna.pruners.MedianPruner(n_warmup_steps=5))
+    # 更温和的剪枝: 前 8 个 trial 不剪 (建立可靠中位数基线), 且每个 trial 至少跑 10 轮
+    # 再判断 —— 否则收敛慢的大/双向配置会在前几轮被误剪, 搜索退化到小模型.
+    study = optuna.create_study(
+        direction='minimize',
+        pruner=optuna.pruners.MedianPruner(n_startup_trials=8, n_warmup_steps=10))
     study.optimize(objective, n_trials=args.trials)
 
     print('\n===== 搜索完成 =====')
